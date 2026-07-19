@@ -3,5 +3,6 @@ torchvision
 numpy<2
 torch-pruning
 scikit-learn
+scipy
 networkx
 node2vec
