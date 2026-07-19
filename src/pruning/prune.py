@@ -65,6 +65,7 @@ def apply_prune_plan(
     """Mutates `model` in place, removing the requested filters (plus whatever
     else coupling structurally requires). Returns which requested layers had to
     be skipped entirely (e.g. would have reduced a layer to 0 channels)."""
+    example_inputs = example_inputs.to(next(model.parameters()).device)
     conv_layers: Dict[str, nn.Conv2d] = {
         name: m for name, m in model.named_modules() if isinstance(m, nn.Conv2d)
     }

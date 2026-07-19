@@ -22,6 +22,7 @@ def apply_l2_baseline_prune(
     model: nn.Module, example_inputs: torch.Tensor, config: L2PruneConfig = None
 ) -> nn.Module:
     config = config or L2PruneConfig()
+    example_inputs = example_inputs.to(next(model.parameters()).device)
     importance = tp.importance.MagnitudeImportance(p=2)
     ignored_layers = [m for m in model.modules() if isinstance(m, nn.Linear)]
 
