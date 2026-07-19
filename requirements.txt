@@ -1,5 +1,7 @@
 torch
 torchvision
-numpy
+numpy<2
 torch-pruning
 scikit-learn
+networkx
+node2vec
