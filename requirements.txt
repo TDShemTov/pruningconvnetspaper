@@ -5,4 +5,3 @@ torch-pruning
 scikit-learn
 scipy
 networkx
-node2vec

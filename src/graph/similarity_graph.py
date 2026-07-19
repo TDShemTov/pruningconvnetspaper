@@ -41,6 +41,7 @@ from typing import Optional
 import networkx as nx
 import numpy as np
 import torch
+from scipy import sparse
 
 from src.embedding.activation_matrix import ActivationMatrix
 
@@ -74,26 +75,29 @@ def _node_layer_channel(activation_matrix: ActivationMatrix):
     return layers, channels
 
 
-def _normalize_edge_weights(graph: nx.Graph) -> None:
-    weights = np.array([d["weight"] for _, _, d in graph.edges(data=True)])
+def _normalize_weights(weights: np.ndarray) -> np.ndarray:
     if len(weights) == 0:
-        return
+        return weights
     lo, hi = weights.min(), weights.max()
     span = hi - lo
-    for _, _, d in graph.edges(data=True):
-        d["weight"] = 1.0 if span == 0 else (d["weight"] - lo) / span
+    if span == 0:
+        return np.ones_like(weights)
+    return (weights - lo) / span
 
 
 def build_similarity_graph(activation_matrix: ActivationMatrix, config: GraphConfig = None) -> nx.Graph:
+    """Builds the graph via a sparse-matrix construction path rather than a
+    per-edge Python loop — an untrained (or lightly correlated) model's filters
+    can produce a graph with millions of edges even at a moderate threshold
+    (observed: 4800 filters -> 6.7M edges at threshold 0.7 on an untrained
+    ResNet18), where a naive `for i, j, w in ...: graph.add_edge(...)` loop
+    takes minutes; sparse-matrix construction takes ~10s at that scale.
+    """
     config = config or GraphConfig()
     vectors = _flatten_filters(activation_matrix.representation)
     sim = _cosine_similarity_matrix(vectors, config.device)
     num_filters = vectors.shape[0]
     layers, channels = _node_layer_channel(activation_matrix)
-
-    graph = nx.Graph()
-    for i in range(num_filters):
-        graph.add_node(i, layer=layers[i], channel=channels[i])
 
     iu = np.triu_indices(num_filters, k=1)
     sims = sim[iu]
@@ -110,8 +114,12 @@ def build_similarity_graph(activation_matrix: ActivationMatrix, config: GraphCon
     else:
         mask = sims >= config.similarity_threshold
 
-    for i, j, w in zip(iu[0][mask], iu[1][mask], sims[mask]):
-        graph.add_edge(int(i), int(j), weight=float(w))
+    edge_i, edge_j = iu[0][mask], iu[1][mask]
+    edge_w = _normalize_weights(sims[mask])
 
-    _normalize_edge_weights(graph)
+    adjacency = sparse.coo_matrix((edge_w, (edge_i, edge_j)), shape=(num_filters, num_filters))
+    graph = nx.from_scipy_sparse_array(adjacency, edge_attribute="weight")
+
+    nx.set_node_attributes(graph, dict(enumerate(layers)), "layer")
+    nx.set_node_attributes(graph, dict(enumerate(channels)), "channel")
     return graph
