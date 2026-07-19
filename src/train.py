@@ -18,10 +18,16 @@ from src.eval.metrics import compute_metrics
 class TrainConfig:
     epochs: int = 20
     batch_size: int = 128
+    # lr/weight_decay defaults below are SGD-tuned (standard ResNet/CIFAR values).
+    # Adam/AdamW typically want a much smaller lr (~1e-3-4e-3) and, for AdamW
+    # specifically, a larger weight_decay (~0.01-0.05, since its decay isn't
+    # entangled with Adam's per-parameter adaptive scaling the way Adam's is) --
+    # switching `optimizer` without re-tuning these two is a common way to get
+    # a silently-diverging or stalled run, since nothing here auto-adjusts them.
     lr: float = 0.1
-    momentum: float = 0.9
+    momentum: float = 0.9  # only used by "sgd"
     weight_decay: float = 5e-4
-    optimizer: str = "sgd"  # "sgd" | "adam"
+    optimizer: str = "sgd"  # "sgd" | "adam" | "adamw"
     scheduler: str = "cosine"  # "cosine" | "step" | "none"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     num_workers: int = 2
@@ -35,6 +41,8 @@ def _build_optimizer(model: nn.Module, config: TrainConfig) -> torch.optim.Optim
         )
     if config.optimizer == "adam":
         return torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+    if config.optimizer == "adamw":
+        return torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     raise ValueError(f"Unsupported optimizer '{config.optimizer}'")
 
 

@@ -40,10 +40,18 @@ holds), and every field is set explicitly in the notebook's config cell.
 Used twice, as two separate instances: `baseline_train_config` (training
 from scratch) and `recalibration_config` (retraining a pruned model before
 evaluation — typically fewer epochs / a lower lr).
-- `epochs`, `batch_size`, `lr`, `momentum`, `weight_decay`
-- `optimizer` (`"sgd"` / `"adam"`), `scheduler` (`"cosine"` / `"step"` /
-  `"none"`)
+- `epochs`, `batch_size`, `lr`, `momentum` (only used by `"sgd"`), `weight_decay`
+- `optimizer` (`"sgd"` / `"adam"` / `"adamw"`), `scheduler` (`"cosine"` /
+  `"step"` / `"none"`)
 - `device`, `num_workers`, `seed`
+
+`lr`/`weight_decay` defaults (`0.1`/`5e-4`) are SGD-tuned (standard
+ResNet/CIFAR values) and don't auto-adjust per optimizer. Adam/AdamW
+typically want a much smaller `lr` (`~1e-3`-`4e-3`); AdamW specifically also
+tends to want a larger `weight_decay` (`~0.01`-`0.05`), since its decay isn't
+entangled with Adam's per-parameter adaptive scaling the way plain Adam's is.
+Switching `optimizer` without re-tuning both is a common way to get a
+silently-diverging or stalled run.
 
 ### Activation extraction (`activation_config: ActivationConfig`)
 - `stats` — any subset of `{mean, max, std, median, skew, kurtosis, entropy}`.
