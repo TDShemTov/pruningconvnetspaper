@@ -23,11 +23,15 @@ from src.embedding import ActivationConfig, build_activation_matrix
 from src.eval.compare import ModelReport, compression_ratios, evaluate_model
 from src.eval.flops_timing import TimingConfig
 from src.graph import (
+    DiffusionEmbedConfig,
+    GCNEmbedConfig,
     GraphConfig,
     Node2VecConfig,
     RawEmbedConfig,
     SpectralEmbedConfig,
     build_similarity_graph,
+    compute_diffusion_embeddings,
+    compute_gcn_embeddings,
     compute_node2vec_embeddings,
     compute_raw_embeddings,
     compute_spectral_embeddings,
@@ -61,10 +65,12 @@ class PipelineConfig:
     graph_config: GraphConfig = field(default_factory=GraphConfig)
 
     # --- graph embedding (swap point: which method actually runs) ---
-    graph_embedding_method: str = "node2vec"  # "node2vec" | "spectral" | "raw"
+    graph_embedding_method: str = "node2vec"  # "node2vec" | "spectral" | "raw" | "diffusion" | "gcn"
     node2vec_config: Node2VecConfig = field(default_factory=Node2VecConfig)
     spectral_config: SpectralEmbedConfig = field(default_factory=SpectralEmbedConfig)
     raw_embed_config: RawEmbedConfig = field(default_factory=RawEmbedConfig)
+    diffusion_config: DiffusionEmbedConfig = field(default_factory=DiffusionEmbedConfig)
+    gcn_config: GCNEmbedConfig = field(default_factory=GCNEmbedConfig)
 
     # --- clustering ---
     cluster_config: ClusterConfig = field(default_factory=lambda: ClusterConfig(n_clusters=20, min_cluster_size=3))
@@ -115,9 +121,13 @@ def _compute_embeddings(config: PipelineConfig, activation_matrix, graph):
         return compute_spectral_embeddings(graph, config.spectral_config)
     if config.graph_embedding_method == "raw":
         return compute_raw_embeddings(activation_matrix, config.raw_embed_config)
+    if config.graph_embedding_method == "diffusion":
+        return compute_diffusion_embeddings(graph, activation_matrix, config.diffusion_config)
+    if config.graph_embedding_method == "gcn":
+        return compute_gcn_embeddings(graph, activation_matrix, config.gcn_config)
     raise ValueError(
         f"unknown graph_embedding_method '{config.graph_embedding_method}', "
-        "expected 'node2vec', 'spectral', or 'raw'"
+        "expected 'node2vec', 'spectral', 'raw', 'diffusion', or 'gcn'"
     )
 
 

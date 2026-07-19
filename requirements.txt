@@ -6,3 +6,4 @@ scikit-learn
 scipy
 networkx
 pandas
+torch-geometric
