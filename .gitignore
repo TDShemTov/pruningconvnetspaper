@@ -1,0 +1,22 @@
+# Claude Code project notes — kept local, not committed
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Data / experiment artifacts (root-level only — do not shadow src/data/)
+/data/
+*.pt
+*.pth
+*.ckpt
+experiments/*/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
