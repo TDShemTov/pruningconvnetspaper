@@ -1,6 +1,6 @@
 torch
 torchvision
-numpy<2
+numpy
 torch-pruning
 scikit-learn
 scipy
