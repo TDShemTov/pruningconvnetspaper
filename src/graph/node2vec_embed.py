@@ -54,6 +54,15 @@ class Node2VecConfig:
     num_negative_samples: int = 5
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
+    # Walks are generated `walk_batch_size` start-nodes at a time rather than all
+    # num_nodes*num_walks at once. Every step of _random_walks allocates tensors
+    # shaped (walk_batch, max_degree) -- on a dense similarity graph (e.g. the
+    # 4800-filter/6.6M-edge case in CLAUDE.md's performance note, ~58% of all
+    # pairs connected) max_degree approaches num_nodes, so the unchunked batch
+    # (num_nodes*num_walks rows) OOM'd at ~37GB/step on a 14.5GB GPU. Chunking
+    # bounds peak walk-generation memory to walk_batch_size*max_degree regardless
+    # of num_walks or graph size.
+    walk_batch_size: int = 4096
     # Floor applied to edge weights only for random-walk sampling. similarity_graph's
     # min-max normalization can legitimately assign an edge exactly weight 0.0 (the
     # least similar kept edge) -- if that's a low-degree node's only edge, its total
@@ -186,9 +195,20 @@ def compute_node2vec_embeddings(graph: nx.Graph, config: Node2VecConfig = None) 
 
     neighbors, base_weights, adjacency_bool = _build_padded_adjacency(graph, config.min_walk_weight, device)
     node_ids = torch.arange(num_nodes, device=device)
-    start_nodes = node_ids.repeat(config.num_walks)
-    walks = _random_walks(start_nodes, neighbors, base_weights, adjacency_bool, config.walk_length, config.p, config.q)
-    centers, contexts = _walks_to_pairs(walks, config.window)
+    all_start_nodes = node_ids.repeat(config.num_walks)
+
+    center_chunks, context_chunks = [], []
+    for start in range(0, all_start_nodes.shape[0], config.walk_batch_size):
+        chunk_start_nodes = all_start_nodes[start : start + config.walk_batch_size]
+        walks = _random_walks(
+            chunk_start_nodes, neighbors, base_weights, adjacency_bool, config.walk_length, config.p, config.q
+        )
+        chunk_centers, chunk_contexts = _walks_to_pairs(walks, config.window)
+        center_chunks.append(chunk_centers)
+        context_chunks.append(chunk_contexts)
+
+    centers = torch.cat(center_chunks)
+    contexts = torch.cat(context_chunks)
 
     model = _SkipGram(num_nodes, config.embed_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
