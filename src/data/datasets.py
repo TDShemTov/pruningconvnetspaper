@@ -193,20 +193,36 @@ def load_full_dataset(
     return full, labels
 
 
+@dataclass
+class DatasetMetadata:
+    num_classes: int
+    in_channels: int
+
+
+def infer_metadata(full: Dataset, labels: np.ndarray) -> DatasetMetadata:
+    """Derive (num_classes, in_channels) from already-loaded data — torchvision
+    datasets encode labels as contiguous ints 0..num_classes-1, so no per-dataset
+    hardcoded table is needed."""
+    sample_image, _ = full[0]
+    return DatasetMetadata(num_classes=len(np.unique(labels)), in_channels=sample_image.shape[0])
+
+
 def build_splits(
     name: str,
     root: str = "./data",
     config: Optional[SplitConfig] = None,
     download: bool = True,
     transform: Optional[Callable] = None,
-) -> Tuple[Subset, Subset, Subset]:
-    """Load `name` and return (train, test, embed) Subsets, class-stratified per SplitConfig."""
+) -> Tuple[Subset, Subset, Subset, DatasetMetadata]:
+    """Load `name` and return (train, test, embed, metadata), class-stratified per SplitConfig."""
     config = config or SplitConfig()
     full, labels = load_full_dataset(name, root=root, download=download, transform=transform)
     train_idx, test_idx, embed_idx = stratified_split_indices(labels, config)
+    metadata = infer_metadata(full, labels)
 
     return (
         Subset(full, train_idx),
         Subset(full, test_idx),
         Subset(full, embed_idx),
+        metadata,
     )
