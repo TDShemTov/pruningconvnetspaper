@@ -32,6 +32,9 @@ class TrainConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     num_workers: int = 2
     seed: int = 42
+    # Prints one line per epoch (train/val loss + val accuracy/balanced_accuracy/f1/auc).
+    # A single train_model call can run for many minutes with no other output otherwise.
+    verbose: bool = True
 
 
 def _build_optimizer(model: nn.Module, config: TrainConfig) -> torch.optim.Optimizer:
@@ -139,5 +142,13 @@ def train_model(
         if scheduler is not None:
             scheduler.step()
         history.append({"epoch": epoch, "train_loss": train_loss, **test_metrics})
+        if config.verbose:
+            print(
+                f"  epoch {epoch + 1}/{config.epochs}: train_loss={train_loss:.4f} "
+                f"val_loss={test_metrics['loss']:.4f} acc={test_metrics['accuracy']:.4f} "
+                f"balanced_acc={test_metrics['balanced_accuracy']:.4f} f1={test_metrics['f1']:.4f} "
+                f"auc={test_metrics['auc']:.4f}",
+                flush=True,
+            )
 
     return {"history": history, "final_metrics": history[-1] if history else {}}

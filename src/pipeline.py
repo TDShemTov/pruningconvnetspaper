@@ -39,7 +39,7 @@ from src.graph import (
 )
 from src.models.builder import build_model
 from src.pruning import L2PruneConfig, apply_l2_baseline_prune, apply_prune_plan
-from src.run_log import RunLog, write_run_log
+from src.run_log import RunLog
 from src.train import TrainConfig, train_model
 
 
@@ -94,10 +94,15 @@ class PipelineConfig:
     seed: int = 42
 
     # --- run logging ---
-    # Writes log_dir/<timestamp>/log.json with this config, per-step wall-clock
-    # durations, and the result, so a run is traceable/self-diagnosing without
-    # ad-hoc timing instrumentation. Set to None to skip writing a log.
+    # Writes log_dir/<timestamp>/log.json plus one steps/<NN>_<name>.json per
+    # step -- each written the moment that step finishes, not batched up until
+    # the whole pipeline is done, so a long run (baseline training alone can
+    # take 10+ minutes) is traceable/self-diagnosing while it's still running,
+    # not only after it completes. Set log_dir to None to skip writing a log.
     log_dir: Optional[str] = "experiments"
+    # Prints a one-line start/done message (with duration) per step, so a long
+    # step shows visible progress instead of going silent until it finishes.
+    log_verbose: bool = True
 
 
 @dataclass
@@ -153,7 +158,7 @@ def _report_summary(report: ModelReport) -> dict:
 
 def run_pipeline(config: PipelineConfig) -> PipelineResult:
     torch.manual_seed(config.seed)
-    run_log = RunLog()
+    run_log = RunLog(config=config, log_dir=config.log_dir, verbose=config.log_verbose)
 
     # 1. data
     with run_log.step("data") as info:
@@ -298,7 +303,6 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         step_durations_seconds=run_log.durations,
     )
 
-    if config.log_dir is not None:
-        result.log_path = write_run_log(config, run_log, result, config.log_dir)
+    result.log_path = run_log.finalize(result)
 
     return result
