@@ -14,6 +14,7 @@ import copy
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
+import numpy as np
 import torch
 from torch.utils.data import Subset
 
@@ -38,7 +39,7 @@ from src.graph import (
 )
 from src.models.builder import build_model
 from src.pruning import L2PruneConfig, apply_l2_baseline_prune, apply_prune_plan
-from src.run_log import timed_step, write_run_log
+from src.run_log import RunLog, write_run_log
 from src.train import TrainConfig, train_model
 
 
@@ -131,33 +132,62 @@ def _compute_embeddings(config: PipelineConfig, activation_matrix, graph):
     )
 
 
+def _embedding_method_config(config: PipelineConfig):
+    return {
+        "node2vec": config.node2vec_config,
+        "spectral": config.spectral_config,
+        "raw": config.raw_embed_config,
+        "diffusion": config.diffusion_config,
+        "gcn": config.gcn_config,
+    }[config.graph_embedding_method]
+
+
+def _report_summary(report: ModelReport) -> dict:
+    return {
+        "test_metrics": report.test_metrics,
+        "flops_params": report.flops_params,
+        "inference": report.inference,
+        "recalibration_history": report.recalibration_history,
+    }
+
+
 def run_pipeline(config: PipelineConfig) -> PipelineResult:
     torch.manual_seed(config.seed)
-    durations: Dict[str, float] = {}
+    run_log = RunLog()
 
     # 1. data
-    with timed_step(durations, "data"):
+    with run_log.step("data") as info:
         train_ds, test_ds, embed_ds, metadata = build_splits(
             config.dataset_name, root=config.data_root, config=config.split_config
         )
         if config.embed_sample_limit is not None:
             limit = min(config.embed_sample_limit, len(embed_ds))
             embed_ds = Subset(embed_ds, list(range(limit)))
+        info["dataset_name"] = config.dataset_name
+        info["num_train"] = len(train_ds)
+        info["num_test"] = len(test_ds)
+        info["num_embed"] = len(embed_ds)
+        info["num_classes"] = metadata.num_classes
+        info["in_channels"] = metadata.in_channels
 
     # 2. model + baseline training
-    with timed_step(durations, "baseline_training"):
+    with run_log.step("baseline_training") as info:
         model = build_model(
             config.model_name,
             num_classes=metadata.num_classes,
             in_channels=metadata.in_channels,
             small_inputs=config.small_inputs,
         )
-        train_model(model, train_ds, test_ds, config.baseline_train_config)
+        train_result = train_model(model, train_ds, test_ds, config.baseline_train_config)
+        info["model_name"] = config.model_name
+        info["train_config"] = config.baseline_train_config
+        info["history"] = train_result["history"]
+        info["final_metrics"] = train_result["final_metrics"]
 
     input_shape = (metadata.in_channels, config.input_size, config.input_size)
     example_inputs = torch.randn(1, *input_shape)
 
-    with timed_step(durations, "baseline_eval"):
+    with run_log.step("baseline_eval") as info:
         baseline_report = evaluate_model(
             "baseline",
             copy.deepcopy(model),
@@ -169,30 +199,57 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             timing_config=config.timing_config,
             eval_batch_size=config.eval_batch_size,
         )
+        info.update(_report_summary(baseline_report))
 
     # 3. activation extraction
-    with timed_step(durations, "activation_extraction"):
+    with run_log.step("activation_extraction") as info:
         activation_matrix = build_activation_matrix(model, embed_ds, config.activation_config)
+        info["stats"] = activation_matrix.stats
+        info["num_filters"] = activation_matrix.representation.shape[0]
+        info["num_samples"] = activation_matrix.representation.shape[1]
+        info["num_stats"] = activation_matrix.representation.shape[2]
+        info["layer_names"] = activation_matrix.layer_names
+        info["filters_per_layer"] = activation_matrix.filters_per_layer
 
     # 4. similarity graph
-    with timed_step(durations, "similarity_graph"):
+    with run_log.step("similarity_graph") as info:
         graph = build_similarity_graph(activation_matrix, config.graph_config)
+        num_nodes = graph.number_of_nodes()
+        num_edges = graph.number_of_edges()
+        degrees = [d for _, d in graph.degree()]
+        info["graph_config"] = config.graph_config
+        info["num_nodes"] = num_nodes
+        info["num_edges"] = num_edges
+        info["density"] = (2 * num_edges / (num_nodes * (num_nodes - 1))) if num_nodes > 1 else 0.0
+        info["avg_degree"] = (sum(degrees) / num_nodes) if num_nodes else 0.0
+        info["isolated_nodes"] = sum(1 for d in degrees if d == 0)
 
     # 5. graph embedding
-    with timed_step(durations, "graph_embedding"):
+    with run_log.step("graph_embedding") as info:
         embeddings = _compute_embeddings(config, activation_matrix, graph)
         total_filters = embeddings.shape[0]
+        info["method"] = config.graph_embedding_method
+        info["method_config"] = _embedding_method_config(config)
+        info["embed_dim"] = embeddings.shape[1]
+        info["num_filters"] = total_filters
 
     # 6. clustering + prune-candidate ranking (ours)
-    with timed_step(durations, "clustering"):
+    with run_log.step("clustering") as info:
         labels = cluster_filters(embeddings, config.cluster_config)
         candidates = rank_prune_candidates(embeddings, labels, config.cluster_config)
         to_prune = select_filters_to_prune(candidates, amount=config.prune_fraction, total_num_filters=total_filters)
+        _, counts = np.unique(labels, return_counts=True)
+        info["cluster_config"] = config.cluster_config
+        info["num_clusters"] = int(len(counts))
+        info["cluster_sizes_desc"] = sorted(counts.tolist(), reverse=True)
+        info["num_prune_candidates"] = len(candidates)
+        info["prune_fraction"] = config.prune_fraction
+        info["num_selected_to_prune"] = len(to_prune)
 
     # 7. our method: prune -> recalibrate -> evaluate
-    with timed_step(durations, "ours_prune_recalibrate_eval"):
+    with run_log.step("ours_prune_recalibrate_eval") as info:
         ours_model = copy.deepcopy(model)
-        apply_prune_plan(ours_model, graph, to_prune, example_inputs)
+        prune_report = apply_prune_plan(ours_model, graph, to_prune, example_inputs)
         ours_report = evaluate_model(
             "ours",
             ours_model,
@@ -204,15 +261,15 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             timing_config=config.timing_config,
             eval_batch_size=config.eval_batch_size,
         )
+        info["recalibration_config"] = config.recalibration_config
+        info["skipped_layers"] = prune_report.skipped_layers
+        info.update(_report_summary(ours_report))
 
     # 8. L2 baseline: prune (same fraction) -> SAME recalibration -> evaluate
-    with timed_step(durations, "l2_prune_recalibrate_eval"):
+    with run_log.step("l2_prune_recalibrate_eval") as info:
         l2_model = copy.deepcopy(model)
-        apply_l2_baseline_prune(
-            l2_model,
-            example_inputs,
-            L2PruneConfig(pruning_ratio=config.prune_fraction, global_pruning=config.l2_global_pruning),
-        )
+        l2_config = L2PruneConfig(pruning_ratio=config.prune_fraction, global_pruning=config.l2_global_pruning)
+        apply_l2_baseline_prune(l2_model, example_inputs, l2_config)
         l2_report = evaluate_model(
             "l2_baseline",
             l2_model,
@@ -224,6 +281,9 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             timing_config=config.timing_config,
             eval_batch_size=config.eval_batch_size,
         )
+        info["l2_config"] = l2_config
+        info["recalibration_config"] = config.recalibration_config
+        info.update(_report_summary(l2_report))
 
     result = PipelineResult(
         baseline=baseline_report,
@@ -235,10 +295,10 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         num_prune_candidates=len(candidates),
         num_pruned=len(to_prune),
         graph_num_edges=graph.number_of_edges(),
-        step_durations_seconds=durations,
+        step_durations_seconds=run_log.durations,
     )
 
     if config.log_dir is not None:
-        result.log_path = write_run_log(config, durations, result, config.log_dir)
+        result.log_path = write_run_log(config, run_log, result, config.log_dir)
 
     return result

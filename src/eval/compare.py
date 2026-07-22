@@ -11,8 +11,8 @@ hyperparameter) is tunable per run, and how much recalibration a given prune
 ratio actually needs is itself an open empirical question.
 """
 
-from dataclasses import dataclass
-from typing import Dict, Optional, Sequence
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -34,6 +34,9 @@ class ModelReport:
     test_metrics: dict
     flops_params: FlopsParamsReport
     inference: InferenceBenchmark
+    # Per-epoch recalibration metrics (loss/acc/balanced_acc/f1/auc), None when
+    # recalibration_config was None (the already-trained unpruned baseline).
+    recalibration_history: Optional[List[dict]] = field(default=None)
 
 
 def evaluate_model(
@@ -54,8 +57,10 @@ def evaluate_model(
     """
     timing_config = timing_config or TimingConfig()
 
+    recalibration_history = None
     if recalibration_config is not None:
-        train_model(model, train_dataset, test_dataset, recalibration_config)
+        train_result = train_model(model, train_dataset, test_dataset, recalibration_config)
+        recalibration_history = train_result["history"]
 
     device = torch.device(timing_config.device)
     model.to(device)
@@ -65,7 +70,13 @@ def evaluate_model(
     flops_params = count_ops_and_params(model, example_inputs.to(device))
     inference = measure_inference(model, input_shape, timing_config)
 
-    return ModelReport(name=name, test_metrics=test_metrics, flops_params=flops_params, inference=inference)
+    return ModelReport(
+        name=name,
+        test_metrics=test_metrics,
+        flops_params=flops_params,
+        inference=inference,
+        recalibration_history=recalibration_history,
+    )
 
 
 def compression_ratios(baseline: ModelReport, other: ModelReport) -> Dict[str, float]:
