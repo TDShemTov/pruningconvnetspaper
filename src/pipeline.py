@@ -8,6 +8,17 @@ that section has been a documentation-only draft throughout the project;
 `PipelineConfig` is exactly that surface, and `run_pipeline` is what actually
 runs it. The Colab notebook is meant to be a thin wrapper around this: clone,
 install requirements, construct one `PipelineConfig`, call `run_pipeline`.
+
+`run_pipeline` is `train_base` (data + baseline training, steps 1-2) followed
+by `prune_and_compare` (activations through comparison, steps 3-9), sharing
+one `RunLog` so a single call still produces exactly one
+`experiments/<timestamp>/` run directory. They're split into two functions
+because everything in `prune_and_compare` (graph topology, embedding method,
+clustering, pruning ratio, recalibration length) is a config choice worth
+sweeping, while none of it touches the trained weights -- a sweep over those
+axes can call `train_base` once and `prune_and_compare` many times against
+the same `BaseArtifacts`, instead of retraining an identical baseline model
+per config combination.
 """
 
 import copy
@@ -16,10 +27,10 @@ from typing import Dict, Optional
 
 import numpy as np
 import torch
-from torch.utils.data import Subset
+from torch.utils.data import Dataset, Subset
 
 from src.clustering import ClusterConfig, cluster_filters, rank_prune_candidates, select_filters_to_prune
-from src.data.datasets import SplitConfig, build_splits
+from src.data.datasets import DatasetMetadata, SplitConfig, build_splits
 from src.embedding import ActivationConfig, build_activation_matrix
 from src.eval.compare import ModelReport, compression_ratios, evaluate_model
 from src.eval.flops_timing import TimingConfig
@@ -91,7 +102,10 @@ class PipelineConfig:
     timing_config: TimingConfig = field(default_factory=TimingConfig)
     eval_batch_size: int = 128
 
-    seed: int = 42
+    # None = don't call torch.manual_seed at all -- weight init draws from
+    # PyTorch's own OS-entropy-seeded default RNG, so back-to-back runs are
+    # genuinely independent instead of reproducing the same baseline model.
+    seed: Optional[int] = 42
 
     # --- run logging ---
     # Writes log_dir/<timestamp>/log.json plus one steps/<NN>_<name>.json per
@@ -103,6 +117,25 @@ class PipelineConfig:
     # Prints a one-line start/done message (with duration) per step, so a long
     # step shows visible progress instead of going silent until it finishes.
     log_verbose: bool = True
+
+
+@dataclass
+class BaseArtifacts:
+    """Everything `train_base` produces and `prune_and_compare` needs to run
+    from it. Reusing one `BaseArtifacts` across several `prune_and_compare`
+    calls means each of those calls prunes/recalibrates/evaluates the SAME
+    trained weights, rather than each starting from an independently
+    (re)trained baseline.
+    """
+
+    model: torch.nn.Module
+    train_ds: Dataset
+    test_ds: Dataset
+    embed_ds: Dataset
+    metadata: DatasetMetadata
+    example_inputs: torch.Tensor
+    input_shape: tuple
+    baseline_report: ModelReport
 
 
 @dataclass
@@ -156,9 +189,17 @@ def _report_summary(report: ModelReport) -> dict:
     }
 
 
-def run_pipeline(config: PipelineConfig) -> PipelineResult:
-    torch.manual_seed(config.seed)
-    run_log = RunLog(config=config, log_dir=config.log_dir, verbose=config.log_verbose)
+def train_base(config: PipelineConfig, run_log: Optional[RunLog] = None) -> BaseArtifacts:
+    """Steps 1-2 of CLAUDE.md (data + baseline training), plus the baseline's
+    own eval -- everything `prune_and_compare` needs and nothing a
+    graph/embedding/clustering/pruning sweep would ever want to vary. Pass an
+    existing `RunLog` (e.g. from `run_pipeline`) to fold these steps into a
+    shared run directory; omitted, this creates its own.
+    """
+    if config.seed is not None:
+        torch.manual_seed(config.seed)
+    if run_log is None:
+        run_log = RunLog(config=config, log_dir=config.log_dir, verbose=config.log_verbose)
 
     # 1. data
     with run_log.step("data") as info:
@@ -205,6 +246,36 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
             eval_batch_size=config.eval_batch_size,
         )
         info.update(_report_summary(baseline_report))
+
+    return BaseArtifacts(
+        model=model,
+        train_ds=train_ds,
+        test_ds=test_ds,
+        embed_ds=embed_ds,
+        metadata=metadata,
+        example_inputs=example_inputs,
+        input_shape=input_shape,
+        baseline_report=baseline_report,
+    )
+
+
+def prune_and_compare(
+    base: BaseArtifacts, config: PipelineConfig, run_log: Optional[RunLog] = None
+) -> PipelineResult:
+    """Steps 3-9 of CLAUDE.md (activations -> graph -> embedding ->
+    clustering -> prune ours/L2 -> recalibrate -> compare), starting from an
+    already-trained `base` instead of training one itself. This is the part
+    of the pipeline every graph/embedding/clustering/pruning sweep axis
+    actually touches, and the part that's cheap to rerun per config
+    combination since it never retrains a baseline model.
+    """
+    if run_log is None:
+        run_log = RunLog(config=config, log_dir=config.log_dir, verbose=config.log_verbose)
+
+    model = base.model
+    train_ds, test_ds, embed_ds = base.train_ds, base.test_ds, base.embed_ds
+    example_inputs, input_shape = base.example_inputs, base.input_shape
+    baseline_report = base.baseline_report
 
     # 3. activation extraction
     with run_log.step("activation_extraction") as info:
@@ -306,3 +377,16 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     result.log_path = run_log.finalize(result)
 
     return result
+
+
+def run_pipeline(config: PipelineConfig) -> PipelineResult:
+    """Single-call entry point: `train_base` then `prune_and_compare`, sharing
+    one `RunLog` so the whole run still lands in exactly one
+    `experiments/<timestamp>/` directory, same as before this was split into
+    two functions. Use `train_base`/`prune_and_compare` directly to reuse one
+    trained model across several downstream configs (e.g. a sweep over
+    `graph_embedding_method` or `graph_config.similarity_threshold`).
+    """
+    run_log = RunLog(config=config, log_dir=config.log_dir, verbose=config.log_verbose)
+    base = train_base(config, run_log)
+    return prune_and_compare(base, config, run_log)

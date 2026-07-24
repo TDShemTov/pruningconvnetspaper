@@ -33,6 +33,7 @@ similarity values.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 import networkx as nx
 import numpy as np
@@ -54,7 +55,7 @@ class GCNEmbedConfig:
     # unweighted (every kept edge treated equally) encoding.
     use_edge_weights: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    seed: int = 42
+    seed: Optional[int] = 42
 
 
 class _GCNEncoder(torch.nn.Module):
@@ -84,7 +85,8 @@ def compute_gcn_embeddings(
 ) -> np.ndarray:
     """Returns (num_filters, embed_dim), row i is filter i's GAE embedding."""
     config = config or GCNEmbedConfig()
-    torch.manual_seed(config.seed)
+    if config.seed is not None:
+        torch.manual_seed(config.seed)
     device = torch.device(config.device)
 
     x = torch.tensor(_flatten_filters(activation_matrix.representation), dtype=torch.float32, device=device)

@@ -32,6 +32,7 @@ into arrays in the first place.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 import networkx as nx
 import numpy as np
@@ -53,7 +54,7 @@ class Node2VecConfig:
     lr: float = 0.025
     num_negative_samples: int = 5
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    seed: int = 42
+    seed: Optional[int] = 42
     # Walks are generated `walk_batch_size` start-nodes at a time rather than all
     # num_nodes*num_walks at once. Every step of _random_walks allocates tensors
     # shaped (walk_batch, max_degree) -- on a dense similarity graph (e.g. the
@@ -189,7 +190,8 @@ class _SkipGram(nn.Module):
 def compute_node2vec_embeddings(graph: nx.Graph, config: Node2VecConfig = None) -> np.ndarray:
     """Returns (num_nodes, embed_dim), row i is node i's embedding (node ids are 0..num_nodes-1)."""
     config = config or Node2VecConfig()
-    torch.manual_seed(config.seed)
+    if config.seed is not None:
+        torch.manual_seed(config.seed)
     device = torch.device(config.device)
     num_nodes = graph.number_of_nodes()
 

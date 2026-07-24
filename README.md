@@ -18,16 +18,25 @@ anything.
 `notebooks/sweep_testing.ipynb` is the multi-run companion: same
 `base_config`, but a `sweep_axes` dict of config-field overrides (dotted
 paths for nested fields, e.g. `"graph_config.similarity_threshold"`) is
-expanded into a full grid, and `run_pipeline` is called once per combination.
-Results land in one aggregated table instead of one at a time. Logs to
-`SWEEP_EXPERIMENTS/` (gitignored) so they never collide with a single-run
-notebook's `experiments/` logs.
+expanded into a full grid. The grid is grouped by whichever fields actually
+affect the trained model (dataset, architecture, `baseline_train_config.*`,
+`split_config.*`, `seed`) — `train_base` runs once per distinct group, and
+`prune_and_compare` runs once per combination, reusing that group's trained
+model instead of retraining it per combination. Results land in one
+aggregated table instead of one at a time. Logs to `SWEEP_EXPERIMENTS/`
+(gitignored) so they never collide with a single-run notebook's
+`experiments/` logs.
 
 ## Config reference
 
-`run_pipeline(config: PipelineConfig)` is the single entry point — every
-section below is a `PipelineConfig` field (or a field on a sub-config it
-holds), and every field is set explicitly in the notebook's config cell.
+`run_pipeline(config: PipelineConfig)` is the single-call entry point —
+internally just `train_base(config)` (data + baseline training) followed by
+`prune_and_compare(base, config)` (everything from activation extraction
+through the final comparison). Call those two directly to reuse one trained
+model across several `PipelineConfig`s that only differ in graph/embedding/
+clustering/pruning/recalibration settings. Every section below is a
+`PipelineConfig` field (or a field on a sub-config it holds), and every field
+is set explicitly in the notebook's config cell.
 
 ### Data
 - `dataset_name` (`"cifar10"`) — any of the 20 datasets in
@@ -104,7 +113,11 @@ weighted-vs-unweighted ablation.
 - `eval_batch_size` (`128`).
 
 ### Misc
-- `seed` (`42`).
+- `seed` (`42`) — `None` skips the `torch.manual_seed` call entirely, so weight
+  init draws from PyTorch's own OS-entropy default RNG instead of reproducing
+  the same run. Every other seed field in the config surface (`SplitConfig.seed`,
+  `TrainConfig.seed` on both `baseline_train_config`/`recalibration_config`, and
+  each graph-embedding config's own `seed`) is `Optional[int]` the same way.
 - `log_dir` (`"experiments"`) — writes `<log_dir>/<timestamp>/log.json` (full
   config + per-step durations + result) on every run; `None` skips writing.
 

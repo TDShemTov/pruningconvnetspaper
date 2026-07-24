@@ -43,7 +43,8 @@ class DiffusionEmbedConfig:
     # Weighted (cosine-similarity strength) vs unweighted (every kept edge
     # counted equally) propagation.
     use_edge_weights: bool = True
-    seed: int = 42
+    # None passes random_state=None to sklearn's PCA -- non-reproducible across calls.
+    seed: Optional[int] = 42
 
 
 def _normalized_adjacency_with_self_loops(graph: nx.Graph, use_edge_weights: bool) -> sparse.csr_matrix:

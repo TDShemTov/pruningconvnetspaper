@@ -5,6 +5,7 @@ after pruning (Step 8) — same loop, just called again on a smaller model.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 import torch
@@ -31,7 +32,10 @@ class TrainConfig:
     scheduler: str = "cosine"  # "cosine" | "step" | "none"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     num_workers: int = 2
-    seed: int = 42
+    # None = don't call torch.manual_seed at all -- weight init/shuffle/dropout
+    # draw from PyTorch's own OS-entropy-seeded default RNG, so back-to-back
+    # calls are genuinely independent instead of reproducing the same run.
+    seed: Optional[int] = 42
     # Prints one line per epoch (train/val loss + val accuracy/balanced_accuracy/f1/auc).
     # A single train_model call can run for many minutes with no other output otherwise.
     verbose: bool = True
@@ -119,7 +123,8 @@ def train_model(
     Returns {"history": [per-epoch metrics dicts], "final_metrics": last epoch's metrics}.
     """
     config = config or TrainConfig()
-    torch.manual_seed(config.seed)
+    if config.seed is not None:
+        torch.manual_seed(config.seed)
 
     device = torch.device(config.device)
     model.to(device)

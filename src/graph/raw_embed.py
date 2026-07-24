@@ -22,7 +22,8 @@ from src.graph.similarity_graph import _flatten_filters
 class RawEmbedConfig:
     # PCA-reduce to this many dims; None keeps the full flattened (samples * stats) vector.
     embed_dim: Optional[int] = 64
-    seed: int = 42
+    # None passes random_state=None to sklearn's PCA -- non-reproducible across calls.
+    seed: Optional[int] = 42
 
 
 def compute_raw_embeddings(activation_matrix: ActivationMatrix, config: RawEmbedConfig = None) -> np.ndarray:

@@ -4,6 +4,7 @@ deterministic alternative to node2vec with no random-walk hyperparameters
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 import networkx as nx
 import numpy as np
@@ -13,7 +14,9 @@ from sklearn.manifold import SpectralEmbedding
 @dataclass
 class SpectralEmbedConfig:
     embed_dim: int = 64
-    seed: int = 42
+    # None passes random_state=None to sklearn -- draws from numpy's global RNG
+    # instead of a fixed one, i.e. non-reproducible across calls.
+    seed: Optional[int] = 42
 
 
 def compute_spectral_embeddings(graph: nx.Graph, config: SpectralEmbedConfig = None) -> np.ndarray:

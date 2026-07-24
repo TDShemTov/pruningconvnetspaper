@@ -101,7 +101,9 @@ class SplitConfig:
     train_frac: float = 0.8
     test_frac: float = 0.1
     embed_frac: float = 0.1
-    seed: int = 42
+    # None = np.random.default_rng(None), i.e. seed from OS entropy -- a fresh,
+    # non-reproducible train/test/embed partition each call.
+    seed: Optional[int] = 42
 
     def __post_init__(self) -> None:
         total = self.train_frac + self.test_frac + self.embed_frac
