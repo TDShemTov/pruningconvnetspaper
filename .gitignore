@@ -14,6 +14,9 @@ venv/
 *.pth
 *.ckpt
 experiments/*/
+MNIST_EXPERIMENTS/
+SWEEP_EXPERIMENTS/
+*_EXPERIMENTS/
 
 # Jupyter
 .ipynb_checkpoints/

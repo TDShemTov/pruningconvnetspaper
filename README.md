@@ -15,6 +15,14 @@ requirements.txt`, build a `PipelineConfig`, run, inspect the results table.
 All the actual logic lives in `src/`; the notebook doesn't reimplement
 anything.
 
+`notebooks/sweep_testing.ipynb` is the multi-run companion: same
+`base_config`, but a `sweep_axes` dict of config-field overrides (dotted
+paths for nested fields, e.g. `"graph_config.similarity_threshold"`) is
+expanded into a full grid, and `run_pipeline` is called once per combination.
+Results land in one aggregated table instead of one at a time. Logs to
+`SWEEP_EXPERIMENTS/` (gitignored) so they never collide with a single-run
+notebook's `experiments/` logs.
+
 ## Config reference
 
 `run_pipeline(config: PipelineConfig)` is the single entry point — every
