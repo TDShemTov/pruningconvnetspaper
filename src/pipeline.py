@@ -25,6 +25,7 @@ import copy
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
+import networkx as nx
 import numpy as np
 import torch
 from torch.utils.data import Dataset, Subset
@@ -136,6 +137,12 @@ class BaseArtifacts:
     example_inputs: torch.Tensor
     input_shape: tuple
     baseline_report: ModelReport
+    # L2 baseline results, keyed by the config fields that actually affect
+    # them (see prune_and_compare's L2 step) -- L2 pruning never depends on
+    # graph/embedding/clustering config, so every combo in a sweep that only
+    # varies those axes would otherwise redo an identical prune+recalibrate.
+    # Only used when recalibration is deterministic (a fixed seed); see below.
+    l2_cache: Dict[tuple, ModelReport] = field(default_factory=dict, repr=False, compare=False)
 
 
 @dataclass
@@ -293,12 +300,22 @@ def prune_and_compare(
         num_nodes = graph.number_of_nodes()
         num_edges = graph.number_of_edges()
         degrees = [d for _, d in graph.degree()]
+        # Connectivity, not just edge count: diffusion/gcn aggregate over each
+        # node's neighborhood, so an isolated node (its own component, size 1)
+        # gets no real neighbor signal from propagation, and gcn specifically
+        # gets no training gradient at all for it (GAE.recon_loss reconstructs
+        # edges, and an isolated node has none) -- component sizes surface
+        # that directly instead of only the aggregate edge/isolated counts.
+        component_sizes = sorted((len(c) for c in nx.connected_components(graph)), reverse=True)
         info["graph_config"] = config.graph_config
         info["num_nodes"] = num_nodes
         info["num_edges"] = num_edges
         info["density"] = (2 * num_edges / (num_nodes * (num_nodes - 1))) if num_nodes > 1 else 0.0
         info["avg_degree"] = (sum(degrees) / num_nodes) if num_nodes else 0.0
         info["isolated_nodes"] = sum(1 for d in degrees if d == 0)
+        info["num_connected_components"] = len(component_sizes)
+        info["largest_component_size"] = component_sizes[0] if component_sizes else 0
+        info["component_sizes_desc"] = component_sizes
 
     # 5. graph embedding
     with run_log.step("graph_embedding") as info:
@@ -341,22 +358,44 @@ def prune_and_compare(
         info["skipped_layers"] = prune_report.skipped_layers
         info.update(_report_summary(ours_report))
 
-    # 8. L2 baseline: prune (same fraction) -> SAME recalibration -> evaluate
+    # 8. L2 baseline: prune (same fraction) -> SAME recalibration -> evaluate.
+    # Doesn't depend on graph/embedding/clustering config at all, so it's
+    # identical for every combo in a sweep that only varies those -- and
+    # identical *deterministically*, not just "usually", whenever recalibration
+    # has a fixed seed. Cache it on `base` in that case and skip redoing the
+    # prune+retrain+eval; a random (seed=None) recalibration is never cached,
+    # since each call is meant to be an independent draw.
+    l2_config = L2PruneConfig(pruning_ratio=config.prune_fraction, global_pruning=config.l2_global_pruning)
+    l2_seed = config.recalibration_config.seed
+    l2_cache_key = (
+        config.prune_fraction,
+        config.l2_global_pruning,
+        repr(config.recalibration_config),
+        repr(config.timing_config),
+        config.eval_batch_size,
+    )
+    cached_l2_report = base.l2_cache.get(l2_cache_key) if l2_seed is not None else None
+
     with run_log.step("l2_prune_recalibrate_eval") as info:
-        l2_model = copy.deepcopy(model)
-        l2_config = L2PruneConfig(pruning_ratio=config.prune_fraction, global_pruning=config.l2_global_pruning)
-        apply_l2_baseline_prune(l2_model, example_inputs, l2_config)
-        l2_report = evaluate_model(
-            "l2_baseline",
-            l2_model,
-            train_ds,
-            test_ds,
-            example_inputs,
-            input_shape,
-            recalibration_config=config.recalibration_config,
-            timing_config=config.timing_config,
-            eval_batch_size=config.eval_batch_size,
-        )
+        if cached_l2_report is not None:
+            l2_report = cached_l2_report
+        else:
+            l2_model = copy.deepcopy(model)
+            apply_l2_baseline_prune(l2_model, example_inputs, l2_config)
+            l2_report = evaluate_model(
+                "l2_baseline",
+                l2_model,
+                train_ds,
+                test_ds,
+                example_inputs,
+                input_shape,
+                recalibration_config=config.recalibration_config,
+                timing_config=config.timing_config,
+                eval_batch_size=config.eval_batch_size,
+            )
+            if l2_seed is not None:
+                base.l2_cache[l2_cache_key] = l2_report
+        info["cached"] = cached_l2_report is not None
         info["l2_config"] = l2_config
         info["recalibration_config"] = config.recalibration_config
         info.update(_report_summary(l2_report))

@@ -54,10 +54,33 @@ class GraphConfig:
     # this (typically stricter) threshold instead of similarity_threshold.
     cross_layer_threshold: Optional[float] = None
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    # See _flatten_filters. Kept as a config toggle (not hardcoded) so the
+    # graph built from standardized vs. raw stats can be A/B compared.
+    standardize_stats: bool = True
 
 
-def _flatten_filters(representation: np.ndarray) -> np.ndarray:
-    """(num_filters, num_samples, num_stats) -> (num_filters, num_samples * num_stats)."""
+def _flatten_filters(representation: np.ndarray, standardize: bool = True) -> np.ndarray:
+    """(num_filters, num_samples, num_stats) -> (num_filters, num_samples * num_stats).
+
+    `standardize=True` (default) z-scores each of the num_stats statistics
+    independently first, using that statistic's own mean/std pooled across
+    every filter and sample. mean/max/std/median live on the raw
+    activation-value scale while skew/kurtosis/entropy are unit-free/on a
+    different scale entirely -- concatenated without this, whichever stat has
+    the largest raw magnitude silently dominates any distance- or
+    variance-based computation that consumes this vector (cosine similarity,
+    PCA, a GCN's linear layers), and the rest of the configured stats are
+    effectively ignored. Standardizing per stat (not per filter) is
+    deliberate: subtracting/dividing by the SAME per-stat mean/std for every
+    filter equalizes scale ACROSS stats while leaving genuine filter-to-filter
+    differences within a stat untouched. Standardizing per filter instead
+    (each filter normalized against its own mean/std) would do the opposite
+    -- erase exactly the inter-filter differences a redundancy signal needs.
+    """
+    if standardize:
+        mean = representation.mean(axis=(0, 1), keepdims=True)
+        std = representation.std(axis=(0, 1), keepdims=True)
+        representation = (representation - mean) / np.where(std < 1e-12, 1.0, std)
     return representation.reshape(representation.shape[0], -1)
 
 
@@ -94,7 +117,7 @@ def build_similarity_graph(activation_matrix: ActivationMatrix, config: GraphCon
     takes minutes; sparse-matrix construction takes ~10s at that scale.
     """
     config = config or GraphConfig()
-    vectors = _flatten_filters(activation_matrix.representation)
+    vectors = _flatten_filters(activation_matrix.representation, standardize=config.standardize_stats)
     sim = _cosine_similarity_matrix(vectors, config.device)
     num_filters = vectors.shape[0]
     layers, channels = _node_layer_channel(activation_matrix)

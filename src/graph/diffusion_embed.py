@@ -45,6 +45,10 @@ class DiffusionEmbedConfig:
     use_edge_weights: bool = True
     # None passes random_state=None to sklearn's PCA -- non-reproducible across calls.
     seed: Optional[int] = 42
+    # See _flatten_filters (similarity_graph.py) -- z-scores each of the 7
+    # stats independently before propagation, so the diffused vector isn't
+    # dominated by whichever raw stat has the largest magnitude.
+    standardize_stats: bool = True
 
 
 def _normalized_adjacency_with_self_loops(graph: nx.Graph, use_edge_weights: bool) -> sparse.csr_matrix:
@@ -70,7 +74,7 @@ def compute_diffusion_embeddings(
     """Returns (num_filters, embed_dim), row i is filter i's diffused (and
     optionally PCA-reduced) raw vector."""
     config = config or DiffusionEmbedConfig()
-    vectors = _flatten_filters(activation_matrix.representation)
+    vectors = _flatten_filters(activation_matrix.representation, standardize=config.standardize_stats)
     normalized_adjacency = _normalized_adjacency_with_self_loops(graph, config.use_edge_weights)
 
     diffused = vectors

@@ -24,12 +24,18 @@ class RawEmbedConfig:
     embed_dim: Optional[int] = 64
     # None passes random_state=None to sklearn's PCA -- non-reproducible across calls.
     seed: Optional[int] = 42
+    # See _flatten_filters (similarity_graph.py) -- z-scores each of the 7
+    # stats independently before PCA, since PCA's variance-maximizing
+    # components would otherwise be dominated by whichever raw stat has the
+    # largest magnitude (mean/max/std/median) at the expense of the rest
+    # (skew/kurtosis/entropy).
+    standardize_stats: bool = True
 
 
 def compute_raw_embeddings(activation_matrix: ActivationMatrix, config: RawEmbedConfig = None) -> np.ndarray:
     """Returns (num_filters, embed_dim), row i is filter i's (optionally PCA-reduced) raw vector."""
     config = config or RawEmbedConfig()
-    vectors = _flatten_filters(activation_matrix.representation)
+    vectors = _flatten_filters(activation_matrix.representation, standardize=config.standardize_stats)
 
     if config.embed_dim is None:
         return vectors.astype(np.float32)

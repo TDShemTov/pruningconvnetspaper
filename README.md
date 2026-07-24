@@ -79,6 +79,14 @@ silently-diverging or stalled run.
 - `same_layer_only` (`False`) / `cross_layer_threshold` (`None`) — same-layer
   vs. global vs. hybrid cross-layer topology.
 - `device`
+- `standardize_stats` (`True`) — z-scores each of the 7 statistics
+  independently (per-stat mean/std pooled across every filter and sample)
+  before cosine similarity. Without it, whichever stat has the largest raw
+  magnitude (`mean`/`max`/`std`/`median` live on the activation-value scale;
+  `skew`/`kurtosis`/`entropy` don't) dominates the similarity score and the
+  rest are effectively ignored. `RawEmbedConfig`/`DiffusionEmbedConfig`/
+  `GCNEmbedConfig` each have their own copy of this same flag, since they
+  consume the flattened stat vector directly rather than through the graph.
 
 ### Graph embedding — swap point
 `graph_embedding_method` selects which method runs; each has its own config
@@ -88,9 +96,9 @@ field on `PipelineConfig`:
 |---|---|---|---|---|
 | `"node2vec"` (default) | `Node2VecConfig` | No | Yes | Custom GPU/CPU biased random walk + skip-gram. Params: `embed_dim`, `walk_length`, `num_walks`, `window`, `p`, `q`, `epochs`, `batch_size`, `walk_batch_size`, `lr`, `num_negative_samples`, `device`, `seed`, `min_walk_weight` |
 | `"spectral"` | `SpectralEmbedConfig` | No | Yes | Deterministic Laplacian eigenmap, no walk hyperparameters. Params: `embed_dim`, `seed` |
-| `"raw"` | `RawEmbedConfig` | Yes | No | No graph at all — optionally PCA-reduced raw statistic vector. Params: `embed_dim` (PCA target, `None` = no reduction), `seed` |
-| `"diffusion"` | `DiffusionEmbedConfig` | Yes | Yes | SGC-style: propagate the raw vector across the graph (`Â^k · X`), no training loop. Params: `embed_dim`, `k` (propagation hops), `use_edge_weights`, `seed` |
-| `"gcn"` | `GCNEmbedConfig` | Yes | Yes | Graph autoencoder, 2-layer `GCNConv` encoder. Params: `embed_dim`, `hidden_dim`, `epochs`, `lr`, `use_edge_weights`, `device`, `seed` |
+| `"raw"` | `RawEmbedConfig` | Yes | No | No graph at all — optionally PCA-reduced raw statistic vector. Params: `embed_dim` (PCA target, `None` = no reduction), `seed`, `standardize_stats` |
+| `"diffusion"` | `DiffusionEmbedConfig` | Yes | Yes | SGC-style: propagate the raw vector across the graph (`Â^k · X`), no training loop. Params: `embed_dim`, `k` (propagation hops), `use_edge_weights`, `seed`, `standardize_stats` |
+| `"gcn"` | `GCNEmbedConfig` | Yes | Yes | Graph autoencoder, 2-layer `GCNConv` encoder. Params: `embed_dim`, `hidden_dim`, `epochs`, `lr`, `use_edge_weights`, `device`, `seed`, `standardize_stats` |
 
 `"diffusion"` and `"gcn"` both expose `use_edge_weights` (cosine-similarity
 strength vs. every kept edge treated equally) for a matched

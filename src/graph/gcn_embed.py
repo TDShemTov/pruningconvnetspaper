@@ -56,6 +56,11 @@ class GCNEmbedConfig:
     use_edge_weights: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: Optional[int] = 42
+    # See _flatten_filters (similarity_graph.py) -- z-scores each of the 7
+    # stats independently before this becomes the GCN's input feature vector,
+    # so the encoder's first linear layer isn't dominated by whichever raw
+    # stat has the largest magnitude.
+    standardize_stats: bool = True
 
 
 class _GCNEncoder(torch.nn.Module):
@@ -89,7 +94,11 @@ def compute_gcn_embeddings(
         torch.manual_seed(config.seed)
     device = torch.device(config.device)
 
-    x = torch.tensor(_flatten_filters(activation_matrix.representation), dtype=torch.float32, device=device)
+    x = torch.tensor(
+        _flatten_filters(activation_matrix.representation, standardize=config.standardize_stats),
+        dtype=torch.float32,
+        device=device,
+    )
     edge_index, edge_weight = _graph_to_edge_tensors(graph, config.use_edge_weights, device)
 
     model = GAE(_GCNEncoder(x.shape[1], config.hidden_dim, config.embed_dim)).to(device)
